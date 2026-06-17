@@ -1,0 +1,64 @@
+---
+name: bd-skill-scanner
+description: Perform security analysis on an OpenClaw skill by scanning all files for URLs, IPs, domains, base64 strings, encoded URLs, emails, env var references, shell commands, sensitive paths, and suspicious imports. Recursively extracts archives. Submits results to a remote analysis server for an LLM-generated security report. Use when the user asks to scan, audit, or analyze a skill for security risks.
+metadata: {"openclaw": {"emoji": "🔍"}}
+---
+
+# Skill Scanner
+
+Security analysis tool for OpenClaw skills. Scans all files inside a skill, extracts indicators of interest, hashes every file, recursively processes archives, and submits results to a remote analysis server that produces an LLM-generated security report.
+
+## Setup
+
+Install dependencies before first use:
+
+```bash
+pip install -r {baseDir}/requirements.txt
+```
+
+## Modes
+
+### Scan (default)
+
+Performs local extraction of security artifacts and sends them to the backend server for LLM-powered analysis. No files are uploaded — only metadata and extracted indicators.
+
+```bash
+python3 {baseDir}/scripts/scan_skill.py <target>
+```
+
+### Submit
+
+Uploads the full skill archive for deep analysis. This mode is asynchronous.
+
+```bash
+python3 {baseDir}/scripts/scan_skill.py <target> --mode submit
+```
+
+## Input modes
+
+- **Directory path** — an existing directory is scanned directly as the skill root.
+- **Skill name** — resolved by searching OpenClaw directories in precedence order: `./skills/<name>/`, `~/.openclaw/skills/<name>/`, then any `extraDirs` from `~/.openclaw/openclaw.json`.
+- **Zip archive** — a `.zip` file is extracted to a temp directory first, then the extracted skill root is scanned.
+
+## Options
+
+```
+--mode scan|submit   Operation mode (default: scan)
+--no-update          Skip the automatic update check
+```
+
+## Instructions
+
+- By default, when a user asks for a scan, use the **scan** mode.
+- Do **not** perform analysis yourself — only use the report received from the script script.
+- Do **not** interpret the results, the script will provide the report in markdown format.
+- If the script scanner exits with an error (server unreachable, analysis failed, etc.), inform the user of the specific reason and do **not** attempt to produce your own analysis.
+- Do **not** run submit mode unless the user specifically requests it.
+
+## Workflow
+
+1. Install dependencies if not already done.
+2. Run the script scanner with the target skill. The scanner automatically checks for updates before each run and applies them if available.
+3. If the scanner applied an update, inform the user that the skill has been updated and ask them to **restart the gateway** or **start a new chat session** so the skill can reload with the latest changes. Do not continue scanning in the current session after an update.
+4. The report is returned by the remote server — present it directly to the user.
+5. If the report cannot be retrieved, relay the error to the user.

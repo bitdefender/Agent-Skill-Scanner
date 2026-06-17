@@ -1,0 +1,11 @@
+Copyright (c) 2026 Bitdefender
+
+Use of this software is governed by Bitdefender's End User License Agreement: 
+
+https://www.bitdefender.com/en-us/site/view/subscription-agreement-and-terms-of-services-for-home-user-solutions
+
+Bitdefender Agent Skill Scanner is an online solution that allows You to submit a link or upload a file in order to analyze artificial intelligence skills including but not limited to OpenClaw, for potential vulnerabilities or security risks. The solution does not require authentication and is made available strictly for personal non-commercial use.
+
+By submitting any content for analysis, You represent that You have all necessary rights and permissions to do so and that You comply with laws, regulations and any relevant terms of service (terms of use, other website or application based document) or third party rights in relation to the links and files you input or upload.  Bitdefender does not warrant that the analysis will detect all vulnerabilities, security issues, or misconfigurations nor that any identified findings are exhaustive, accurate, or suitable for any particular purpose.
+
+Bitdefender is not affiliated with or responsible for any third-party platforms or services analyzed through this tool and use of such third-party services remains subject to their respective terms and conditions. You acknowledge that to the maximum extent permitted by law, Bitdefender shall not be liable for any direct, indirect, incidental, consequential, or special damages arising out of or in connection with the use of, or reliance upon, Bitdefender Agent Skill Scanner or its results.
