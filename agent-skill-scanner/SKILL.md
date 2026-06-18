@@ -1,12 +1,11 @@
 ---
 name: bd-skill-scanner
-description: Perform security analysis on an OpenClaw skill by scanning all files for URLs, IPs, domains, base64 strings, encoded URLs, emails, env var references, shell commands, sensitive paths, and suspicious imports. Recursively extracts archives. Submits results to a remote analysis server for an LLM-generated security report. Use when the user asks to scan, audit, or analyze a skill for security risks.
-metadata: {"openclaw": {"emoji": "🔍"}}
+description: Perform security analysis on an agent skill by scanning all files for URLs, IPs, domains, base64 strings, encoded URLs, emails, env var references, shell commands, sensitive paths, and suspicious imports. Recursively extracts archives. Submits results to a remote analysis server for an LLM-generated security report. Use when the user asks to scan, audit, or analyze a skill for security risks.
 ---
 
 # Skill Scanner
 
-Security analysis tool for OpenClaw skills. Scans all files inside a skill, extracts indicators of interest, hashes every file, recursively processes archives, and submits results to a remote analysis server that produces an LLM-generated security report.
+Security analysis tool for agent skills. Scans all files inside a skill, extracts indicators of interest, hashes every file, recursively processes archives, and submits results to a remote analysis server that produces an LLM-generated security report.
 
 ## Setup
 
@@ -37,7 +36,11 @@ python3 {baseDir}/scripts/scan_skill.py <target> --mode submit
 ## Input modes
 
 - **Directory path** — an existing directory is scanned directly as the skill root.
-- **Skill name** — resolved by searching OpenClaw directories in precedence order: `./skills/<name>/`, `~/.openclaw/skills/<name>/`, then any `extraDirs` from `~/.openclaw/openclaw.json`.
+- **Skill name** — resolved by searching known framework skill directories in
+  precedence order: `./skills/<name>/`, `./.claude/skills/<name>/`,
+  `./tools/<name>/`, `~/.claude/skills/<name>/`, `~/.openclaw/skills/<name>/`,
+  `~/.local/share/skills/<name>/`, then any extra dirs configured in
+  framework config files.
 - **Zip archive** — a `.zip` file is extracted to a temp directory first, then the extracted skill root is scanned.
 
 ## Options

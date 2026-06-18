@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.8] — 2026-06-18
+
+### Changed
+
+- Skill name resolution now searches additional framework directories:
+  `.claude/skills/`, `tools/`, `~/.claude/skills/`, and `~/.local/share/skills/`,
+  in addition to the existing OpenClaw paths
+- Removed OpenClaw-specific branding from skill description, module docstring,
+  and CLI help text — the scanner is now framework-agnostic
+- Refactored `load_openclaw_config()` into `_load_extra_skill_dirs()` to support
+  multiple framework config sources
+
 ## [1.2.7] — 2026-06-17
 
 Initial public release of **Bitdefender Agent Skill Scanner** — a security analysis

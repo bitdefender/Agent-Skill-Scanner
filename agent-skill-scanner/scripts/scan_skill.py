@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenClaw Skill Scanner — security analysis for OpenClaw skills."""
+"""Agent Skill Scanner — security analysis for agent skills."""
 
 import argparse
 import base64
@@ -41,7 +41,7 @@ try:
 except ImportError:
     HAS_RAR = False
 
-SCANNER_VERSION = "1.2.7"
+SCANNER_VERSION = "1.2.8"
 
 MAX_EXTRACT_BYTES = 500 * 1024 * 1024   # 500 MB total uncompressed size
 MAX_EXTRACT_FILES = 10_000               # max entries per archive
@@ -956,29 +956,38 @@ def enrich_with_findings(entries: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def load_openclaw_config() -> dict:
-    config_path = Path.home() / ".openclaw" / "openclaw.json"
-    if not config_path.is_file():
-        return {}
-    try:
-        text = config_path.read_text(encoding="utf-8")
-        text = re.sub(r"//.*$", "", text, flags=re.MULTILINE)
-        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-        return json.loads(text)
-    except Exception:
-        return {}
+def _load_extra_skill_dirs() -> list[Path]:
+    """Return extra skill search dirs from all known framework config files."""
+    extra: list[Path] = []
+
+    # OpenClaw — ~/.openclaw/openclaw.json
+    openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
+    if openclaw_config.is_file():
+        try:
+            text = openclaw_config.read_text(encoding="utf-8")
+            text = re.sub(r"//.*$", "", text, flags=re.MULTILINE)
+            text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+            data = json.loads(text)
+            for d in data.get("skills", {}).get("load", {}).get("extraDirs", []):
+                extra.append(Path(d).expanduser())
+        except Exception:
+            pass
+
+    return extra
 
 
 def resolve_skill_name(name: str) -> Path | None:
     candidates = [
-        Path.cwd() / "skills" / name,
-        Path.home() / ".openclaw" / "skills" / name,
+        Path.cwd() / "skills" / name,                          # generic project
+        Path.cwd() / ".claude" / "skills" / name,              # Claude Code project-level
+        Path.cwd() / "tools" / name,                           # generic project tools dir
+        Path.home() / ".claude" / "skills" / name,             # Claude Code user-level
+        Path.home() / ".openclaw" / "skills" / name,           # OpenClaw user-level
+        Path.home() / ".local" / "share" / "skills" / name,    # XDG generic fallback
     ]
 
-    config = load_openclaw_config()
-    extra_dirs = config.get("skills", {}).get("load", {}).get("extraDirs", [])
-    for d in extra_dirs:
-        candidates.append(Path(d).expanduser() / name)
+    for d in _load_extra_skill_dirs():
+        candidates.append(d / name)
 
     for candidate in candidates:
         skill_md = candidate / "SKILL.md"
@@ -1155,7 +1164,7 @@ def build_report(
 
 
 def scan_url_remote(url_target: str, server_base: str) -> dict:
-    """POST /skills/checker — scan a Clawhub URL directly."""
+    """POST /skills/checker — scan a skill URL directly."""
     url = f"{server_base.rstrip('/')}"
     try:
         resp = requests.post(
@@ -1353,11 +1362,11 @@ def _cleanup_temps(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="OpenClaw Skill Scanner — security analysis for skills",
+        description="Agent Skill Scanner — security analysis for agent skills",
     )
     parser.add_argument(
         "target",
-        help="Skill directory path, skill name, .zip archive, or Clawhub URL",
+        help="Skill directory path, skill name, .zip archive, or skill registry URL",
     )
     parser.add_argument(
         "--mode", "-m",
