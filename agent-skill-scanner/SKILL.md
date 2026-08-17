@@ -1,5 +1,6 @@
 ---
-name: bd-skill-scanner
+name: agent-skill-scanner
+version: 1.3.2
 description: Perform security analysis on an agent skill by scanning all files for URLs, IPs, domains, base64 strings, encoded URLs, emails, env var references, shell commands, sensitive paths, and suspicious imports. Recursively extracts archives. Submits results to a remote analysis server for an LLM-generated security report. Use when the user asks to scan, audit, or analyze a skill for security risks.
 ---
 
@@ -17,19 +18,33 @@ Use an isolated virtual environment. Install dependencies before first use:
 pip install -r {baseDir}/requirements.txt
 ```
 
+**Runtime dependencies** (installed by the command above): `requests`,
+`pyyaml`, `py7zr` (.7z support), `rarfile` (.rar support), `light-embed`,
+`tokenizers`, `numpy` (embeddings), `cryptography` (signed-update
+verification).
+
+**Optional system binary:** `.rar` extraction additionally requires `unrar`
+or `unar` on PATH; without it, `.rar` archives inside a skill are skipped
+with a warning and the rest of the scan proceeds.
+
 ## Modes
 
 ### Scan (default)
 
-Performs local extraction of security artifacts and sends them to the backend server for LLM-powered analysis. No files are uploaded — only metadata and extracted indicators.
+Performs local extraction of security artifacts and sends them to the backend server for LLM-powered analysis. Full files are never uploaded in scan mode — the payload is metadata and extracted indicators, which include short matched excerpts (see Network behavior below).
 
-**Network behavior:** every scan contacts the analysis backend to check for
-scanner updates (disable with `--no-update`) and to submit findings. Updates
-are downloaded from the backend and are applied only after their Ed25519
-signature is verified against a public key pinned in this scanner; unsigned
-or tampered payloads are rejected and the existing install is left untouched.
-The optional embedding step downloads a model from HuggingFace Hub on first
-use.
+**Network behavior:** the analysis backend is
+`https://nimbus.bitdefender.net/skills/checker`, operated by Bitdefender.
+Every scan contacts it to check for scanner updates (disable with
+`--no-update`) and posts the extracted indicators listed above for
+LLM-powered analysis. Indicators include short excerpts of matched content —
+regex match fragments up to 100 characters and decoded base64 snippets up to
+500 characters — but never full file contents; **submit** mode is the
+exception and uploads the full skill archive. Updates are downloaded from the same backend
+and are applied only after their Ed25519 signature is verified against a
+public key pinned in this scanner; unsigned or tampered payloads are rejected
+and the existing install is left untouched. The optional embedding step
+downloads a model from HuggingFace Hub on first use.
 
 ```bash
 python3 {baseDir}/scripts/scan_skill.py <target>

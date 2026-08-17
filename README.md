@@ -43,18 +43,18 @@ It walks every file in a target skill, extracts security indicators, runs **71 b
 - **Deep archive inspection** — recursively unpacks `.zip`, `.tar.gz`/`.tgz`, `.tar.bz2`/`.tbz2`, `.tar`, `.7z`, and `.rar` up to 10 levels deep, with limits of 500 MB uncompressed and 10,000 entries per archive. Symlinks are skipped, never followed.
 - **Prose-aware** — natural-language threats hidden in `SKILL.md` instructions (stealth exfiltration, covert actions, keyword/counter triggers) are first-class detections.
 - **Semantic embeddings** — computes local sentence embeddings (`sentence-transformers/all-MiniLM-L6-v2`, ONNX) to support analysis; can be disabled.
-- **Privacy-respecting default** — in scan mode, only hashes, extracted indicators, and metadata are transmitted; your file contents are never uploaded. Full-archive upload happens only in the explicit, opt-in submit mode.
+- **Privacy-respecting default** — in scan mode, only hashes, extracted indicators, and metadata are transmitted; full files are never uploaded. Indicators include short matched excerpts (regex match fragments up to 100 characters, decoded base64 snippets up to 500 characters). Full-archive upload happens only in the explicit, opt-in submit mode.
 - **Flexible targets** — scan a directory, an installed skill by name, a `.zip`, or a URL.
 
 ## Installation
 
-This is an agent skill. Place it in one of your skills directories and install its dependencies:
+This is an agent skill. Requires Python 3.12 or 3.13 (3.13 recommended). Place it in one of your skills directories and install its dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**Dependencies:** `requests`, `pyyaml`, `py7zr`, `rarfile`, `light-embed`, `tokenizers`, `numpy`. Optional pieces degrade gracefully — `py7zr`/`rarfile` are only needed for `.7z`/`.rar` targets, and `light-embed`/`tokenizers`/`numpy` only for embeddings.
+**Dependencies:** `requests`, `pyyaml`, `py7zr`, `rarfile`, `light-embed`, `tokenizers`, `numpy`, `cryptography`. Optional pieces degrade gracefully — `py7zr`/`rarfile` are only needed for `.7z`/`.rar` targets, `light-embed`/`tokenizers`/`numpy` only for embeddings, and `cryptography` only for verifying signed self-updates (without it, scanning works and updates stay disabled).
 
 > `.rar` extraction also requires a system `unrar`/`unar` binary on your `PATH` (a requirement of the `rarfile` library).
 
@@ -92,7 +92,7 @@ python3 scripts/scan_skill.py <target> --mode submit
 | Target | Behavior |
 | --- | --- |
 | Directory path | Scanned directly as the skill root. |
-| Skill name | Resolved via `./skills/<name>/`, then `~/.openclaw/skills/<name>/`, then any `extraDirs` in `~/.openclaw/openclaw.json`. |
+| Skill name | Resolved via `./skills/`, `./.claude/skills/`, `./tools/`, `~/.claude/skills/`, `~/.openclaw/skills/`, `~/.local/share/skills/`, plus any `extraDirs` from framework config. |
 | `.zip` archive | Extracted to a temp directory, then scanned. |
 | URL | Sent to the backend for scanning (scan mode only). |
 
@@ -112,7 +112,7 @@ When you ask in plain language, the skill holds the agent to a fixed contract:
 
 - **Scan mode is the default** — a casual request never uploads your files.
 - **Submit is opt-in only** — the agent won't upload the full archive unless you explicitly ask.
-- **The agent relays, it doesn't judge** — it presents the backend's report and adds no analysis of its own.
+- **The agent relays, it doesn't overrule** — it presents the backend's report and never substitutes its own verdict; it may verify individual findings against the skill's source and mark which ones it confirmed.
 - **Errors are surfaced as-is** — on failure (server unreachable, analysis failed) you get the specific reason.
 - **Sessions reset after a self-update** — if the client updated on launch, the agent asks you to start a fresh session so the new version runs.
 
@@ -123,19 +123,19 @@ When you ask in plain language, the skill holds the agent to a fixed contract:
 3. **Cache check** — ask the server whether a report already exists for that hash; if so, return it immediately.
 4. **Collect & enrich** — walk every file, hash it, recurse into archives, and run all 18 indicator extractors and 71 behavioral patterns over text content.
 5. **Embed** — compute local semantic embeddings (unless disabled).
-6. **Submit metadata** — send hashes, indicators, counts, metadata, and embeddings to the backend. No file contents in scan mode.
+6. **Submit metadata** — send hashes, indicators (with their short matched excerpts), counts, metadata, and embeddings to the backend. No full file contents in scan mode.
 7. **Report** — the backend returns a risk level, summary, and findings, rendered as Markdown.
 
 ## What gets sent to the server
 
 | Mode | Transmitted |
 | --- | --- |
-| **Scan** (default) | File hashes (SHA-256/MD5), extracted indicators and pattern matches, file metadata (path, size, MIME), finding counts, `SKILL.md` frontmatter, dependency metadata, and local embeddings. **Raw file contents are *not* transmitted.** |
+| **Scan** (default) | File hashes (SHA-256/MD5), extracted indicators and pattern matches — including short excerpts of matched content (regex fragments ≤100 chars, decoded base64 snippets ≤500 chars) — file metadata (path, size, MIME), finding counts, `SKILL.md` frontmatter, dependency metadata, and local embeddings. **Full file contents are *not* transmitted.** |
 | **Submit** (opt-in) | The complete skill archive is uploaded for deep analysis. |
 
 ## Updates
 
-By default, on every run the client contacts the server and — if a newer version exists — downloads it, overwrites its own files in place, and re-executes. One practical implication: the exact client code that runs may change between invocations. To keep the client static, run with `--no-update`. If an update is applied mid-session, start a new session so the new version loads.
+By default, on every run the client contacts the server and — if a newer version exists — downloads it and applies it **only after verifying its Ed25519 signature** against a public key pinned in the client. The update is staged with path-traversal-safe extraction, sanity-checked, and swapped in with an automatic backup-restore on failure, so a bad or tampered update can neither run nor destroy the existing install. The client then re-executes; one practical implication is that the exact client code that runs may change between invocations. To keep the client static, run with `--no-update`. If an update is applied mid-session, start a new session so the new version loads.
 
 ---
 

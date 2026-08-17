@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2] — 2026-08-17
+
+### Added
+
+- `version` field in SKILL.md frontmatter, CI-enforced to always match the
+  scanner's `SCANNER_VERSION` and the signed-bundle manifest
+- Explicit runtime-dependency declarations in SKILL.md, including the
+  optional `unrar`/`unar` system binary required for `.rar` support
+
+### Changed
+
+- SKILL.md names the analysis backend plainly
+  (`https://nimbus.bitdefender.net/skills/checker`, operated by Bitdefender)
+  and describes the scan-mode payload precisely: extracted indicators include
+  short matched excerpts (regex fragments up to 100 characters, decoded
+  base64 snippets up to 500 characters); full files are never uploaded in
+  scan mode — correcting the earlier "never raw file contents" phrasing
+
+## [1.3.1] — 2026-08-14
+
+### Changed
+
+- Detector calibration: findings from prose/documentation files move to
+  low-confidence `*_in_docs` keys; sensitive-path matching is boundary-aware
+  (`os.environ`, `process.env.*` no longer flag `.env`); `dd` requires a real
+  `key=value` argument, so date formats no longer match; `import os` removed
+  from suspicious imports; `compile()` detection ignores method calls;
+  legacy Bitcoin addresses require a valid Base58Check checksum
+- Sensitive env var names split into reads (high confidence) vs template
+  assignments such as `NAME=` scaffolding (low confidence)
+- Report titles use the skill's frontmatter name instead of the
+  server-supplied identifier
+- Version floors for `light-embed`, `tokenizers`, `numpy`; supported Python
+  range documented (3.12–3.13)
+- Calling agents may verify findings against the source before presenting
+  them as confirmed
+
+## [1.3.0] — 2026-08-14
+
+### Added
+
+- Signed auto-update: payloads are Ed25519-signature-verified against a
+  public key pinned in the scanner before anything touches disk; unsigned or
+  tampered payloads are rejected
+- New dependency: `cryptography` (imported lazily — scanning works without
+  it; updates stay disabled until installed)
+
+### Changed
+
+- Updates are staged with path-traversal-safe extraction, sanity-checked,
+  and applied via a backup-restore swap — a failed update can no longer
+  remove the existing install
+
+### Security
+
+- Clients at 1.2.8 or older reach 1.3.0 through their original unverified
+  updater (one-time hop); every update from 1.3.0 onward is verified
+
 ## [1.2.8] — 2026-06-18
 
 ### Changed
