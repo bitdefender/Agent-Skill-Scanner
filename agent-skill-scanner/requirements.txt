@@ -2,6 +2,7 @@ requests>=2.31.0
 py7zr>=0.22.0
 rarfile>=4.1
 pyyaml>=6.0.1
-light-embed
-tokenizers
-numpy
+light-embed>=0.4.0
+tokenizers>=0.21.0
+numpy>=1.26.0
+cryptography>=42.0.0

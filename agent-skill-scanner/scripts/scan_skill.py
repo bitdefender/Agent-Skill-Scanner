@@ -41,7 +41,7 @@ try:
 except ImportError:
     HAS_RAR = False
 
-SCANNER_VERSION = "1.2.8"
+SCANNER_VERSION = "1.3.1"
 
 MAX_EXTRACT_BYTES = 500 * 1024 * 1024   # 500 MB total uncompressed size
 MAX_EXTRACT_FILES = 10_000               # max entries per archive
@@ -53,21 +53,125 @@ def _parse_version(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in v.strip().split("."))
 
 
-def _check_and_apply_update(server_url: str) -> bool:
-    """Check the server for a newer scanner version; download and apply if available.
+# Base64 of the raw 32-byte Ed25519 public key used to verify update payloads.
+# Pinned at release time by nimbus_tools/sign_scanner_bundle.py --generate-keypair.
+UPDATE_PUBKEY_B64 = "5XWSjd1am9OAu8uLCn+dIouQtKt+3dzQ+9wWQCUWWXQ="
 
-    Returns True only right before os.execv (callers won't see it in practice).
-    On any failure the error is logged to stderr and the scan proceeds normally.
+
+def _update_canonical_message(version: str, sha256_hex: str) -> bytes:
+    """Canonical byte string signed by the release tool and verified by clients."""
+    return f"bd-skill-scanner\n{version}\n{sha256_hex}\n".encode("utf-8")
+
+
+def _verify_update_payload(
+    zip_bytes: bytes,
+    version: str,
+    sha256_hex: str,
+    signature_b64: str,
+    pubkey_b64: str,
+) -> tuple[bool, str]:
+    """Verify a downloaded update bundle before it is allowed to touch disk.
+
+    Checks the recomputed SHA-256 against the served digest, then the Ed25519
+    signature over the canonical message. The cryptography import is lazy so
+    installs that predate the dependency keep scanning (updates just stay off).
     """
+    if not pubkey_b64:
+        return False, "no pinned update public key in this build"
+    actual_hex = hashlib.sha256(zip_bytes).hexdigest()
+    if actual_hex != sha256_hex:
+        return False, f"payload hash mismatch (expected {sha256_hex}, got {actual_hex})"
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError:
+        return False, (
+            "signature verification unavailable; "
+            "run `pip install -r requirements.txt` to re-enable updates"
+        )
+    try:
+        pubkey = Ed25519PublicKey.from_public_bytes(base64.b64decode(pubkey_b64))
+        pubkey.verify(
+            base64.b64decode(signature_b64),
+            _update_canonical_message(version, actual_hex),
+        )
+    except InvalidSignature:
+        return False, "payload failed signature verification — possible tampering"
+    except Exception as exc:
+        return False, f"signature verification error: {exc}"
+    return True, ""
+
+
+_RE_STAGED_VERSION = re.compile(r'^SCANNER_VERSION\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _stage_update_zip(zip_bytes: bytes, staging_parent: Path) -> Path:
+    """Extract an update bundle into a fresh staging dir using safe extraction."""
+    staging = Path(tempfile.mkdtemp(prefix=".bd_scanner_staging-", dir=staging_parent))
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            _safe_zip_extract(zf, staging)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return staging
+
+
+def _staged_version(staged_root: Path) -> str:
+    """Read SCANNER_VERSION out of a staged bundle without importing it."""
+    script = staged_root / "scripts" / "scan_skill.py"
+    try:
+        m = _RE_STAGED_VERSION.search(script.read_text(encoding="utf-8", errors="replace"))
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
+
+
+def _swap_install(skill_dir: Path, staged_root: Path, version: str) -> None:
+    """Replace skill_dir with staged_root, restoring the original on any failure."""
+    backup = skill_dir.parent / f".bd_scanner_backup-{version}"
+    if backup.exists():
+        shutil.rmtree(backup)
+    skill_dir.rename(backup)
+    try:
+        try:
+            staged_root.rename(skill_dir)
+        except OSError:
+            shutil.copytree(staged_root, skill_dir)
+    except Exception:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        try:
+            backup.rename(skill_dir)
+        except OSError:
+            try:
+                shutil.copytree(backup, skill_dir, dirs_exist_ok=True)
+            except Exception:
+                print(f"  [WARN] Could not restore previous install; backup preserved at {backup}",
+                      file=sys.stderr)
+                raise
+        raise
+    shutil.rmtree(staged_root, ignore_errors=True)  # leftover only on the copytree path
+    shutil.rmtree(backup, ignore_errors=True)
+
+
+def _check_and_apply_update(server_url: str, skill_dir: Path | None = None) -> bool:
+    """Check the server for a newer scanner version; verify, stage, and apply it.
+
+    The install is never modified before a signature-verified staged copy
+    exists. Every failure prints a specific warning, returns False, and lets
+    the scan proceed. Returns True only right before os.execv.
+    """
+    skill_dir = skill_dir or _SKILL_DIR
     base = server_url.rstrip("/")
-    version_url = f"{base}/scanner/version"
-    download_url = f"{base}/scanner/download"
 
     try:
-        resp = requests.post(version_url, timeout=5)
+        resp = requests.post(f"{base}/scanner/version", timeout=5)
         resp.raise_for_status()
-        remote_version = resp.json().get("version", "")
+        manifest = resp.json()
+        remote_version = manifest.get("version", "")
         if not remote_version:
+            print("  [WARN] Update check failed: server response has no version field.",
+                  file=sys.stderr)
             return False
     except Exception as exc:
         print(f"  [WARN] Update check failed: {exc}", file=sys.stderr)
@@ -85,47 +189,50 @@ def _check_and_apply_update(server_url: str) -> bool:
         print(f"  Scanner is up to date ({SCANNER_VERSION}).", file=sys.stderr)
         return False
 
+    sha256_hex = manifest.get("sha256", "")
+    signature_b64 = manifest.get("signature", "")
+    if not sha256_hex or not signature_b64:
+        print("  [WARN] Update skipped: server did not provide a signed manifest.",
+              file=sys.stderr)
+        return False
+
     print(f"  New version available: {remote_version} (current: {SCANNER_VERSION}). "
           f"Downloading update...", file=sys.stderr)
 
     try:
-        dl = requests.post(download_url, timeout=30)
+        dl = requests.post(f"{base}/scanner/download", timeout=30)
         dl.raise_for_status()
     except Exception as exc:
         print(f"  [WARN] Failed to download update: {exc}", file=sys.stderr)
         return False
 
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            with zipfile.ZipFile(io.BytesIO(dl.content)) as zf:
-                zf.extractall(tmp_path)
-
-            extracted_items = list(tmp_path.iterdir())
-            src = extracted_items[0] if len(extracted_items) == 1 and extracted_items[0].is_dir() else tmp_path
-
-            for item in _SKILL_DIR.iterdir():
-                if item.name == "__pycache__":
-                    continue
-                if item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    item.unlink()
-
-            for item in src.iterdir():
-                dest = _SKILL_DIR / item.name
-                if item.is_dir():
-                    shutil.copytree(item, dest)
-                else:
-                    shutil.copy2(item, dest)
-
-        print(f"  Updated to {remote_version}. Restarting...", file=sys.stderr)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-
-    except Exception as exc:
-        print(f"  [WARN] Failed to apply update: {exc}", file=sys.stderr)
+    ok, reason = _verify_update_payload(
+        dl.content, remote_version, sha256_hex, signature_b64, UPDATE_PUBKEY_B64
+    )
+    if not ok:
+        print(f"  [WARN] Update rejected: {reason}", file=sys.stderr)
         return False
 
+    staging = None
+    try:
+        staging = _stage_update_zip(dl.content, skill_dir.parent)
+        staged_ver = _staged_version(staging)
+        if staged_ver != remote_version:
+            print(f"  [WARN] Update rejected: staged bundle reports version "
+                  f"{staged_ver!r}, server claimed {remote_version!r}.", file=sys.stderr)
+            return False
+        _swap_install(skill_dir, staging, remote_version)
+        staging = None  # consumed by the swap (renamed) or already copied
+    except Exception as exc:
+        print(f"  [WARN] Failed to apply update ({exc}); existing install left intact.",
+              file=sys.stderr)
+        return False
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+    print(f"  Updated to {remote_version}. Restarting...", file=sys.stderr)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
     return True
 
 
@@ -206,6 +313,11 @@ RE_ENV_VAR = re.compile(
     re.VERBOSE,
 )
 
+# High-recall name matching by design: quoted invocations (os.system("…"),
+# subprocess list args) must stay detectable, and documentation mentions are
+# already down-weighted via the *_in_docs split. dd alone requires a
+# key=value argument — real dd invocations always have one, date formats
+# ("dd-MM-yyyy", "yyyy-mm-dd") never do.
 DANGEROUS_COMMANDS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bcurl\b"), "curl"),
     (re.compile(r"\bwget\b"), "wget"),
@@ -218,7 +330,7 @@ DANGEROUS_COMMANDS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bchmod\b"), "chmod"),
     (re.compile(r"\bchown\b"), "chown"),
     (re.compile(r"\brm\s+-rf\b"), "rm -rf"),
-    (re.compile(r"\bdd\b"), "dd"),
+    (re.compile(r"\bdd\s+(?:if|of|bs|count|seek|skip|conv|status)="), "dd"),
     (re.compile(r"\bmkfs\b"), "mkfs"),
     (re.compile(r"\bmount\b"), "mount"),
     (re.compile(r"\bumount\b"), "umount"),
@@ -258,11 +370,39 @@ SENSITIVE_PATHS = [
     ".env",
 ]
 
+
+def _sensitive_path_pattern(sp: str) -> re.Pattern:
+    """Path-boundary regex for a sensitive-path entry.
+
+    Bare substring matching flagged ``.env`` inside ``os.environ`` and
+    ``id_rsa`` inside identifiers. Entries not starting with a path prefix
+    get a leading boundary; entries not ending in ``/`` get a trailing one
+    (which is what rejects ``os.environ`` — the ``i`` after ``.env``).
+    """
+    prefix = "" if sp[0] in "/~." else r"(?<!\w)"
+    suffix = "" if sp.endswith("/") else r"(?!\w)"
+    if sp == ".env":
+        # process.env.X / import.meta.env.X / Deno.env.get(...) etc. are
+        # member access, not env files; config.env / .env.production still
+        # match. os.environ is rejected by the trailing (?!\w) — "iron"
+        # continues the word.
+        prefix = (r"(?<!process)(?<!meta)(?<!Deno)(?<!deno)(?<!window)"
+                  r"(?<!this)(?<!self)(?<!globalThis)(?<!Bun)(?<!bun)")
+        suffix = r"(?!\.example)" + suffix
+    return re.compile(prefix + re.escape(sp) + suffix)
+
+
+SENSITIVE_PATH_PATTERNS: list[tuple[str, re.Pattern]] = [
+    (sp, _sensitive_path_pattern(sp)) for sp in SENSITIVE_PATHS
+]
+
+# NOTE: `import os` / `from os import` are deliberately absent — they appear
+# in essentially every non-trivial Python file and carry no signal on their
+# own; the dangerous os usages (os.system/os.popen/os.exec*) are covered by
+# SECURITY_PATTERNS and the os.exec pattern below.
 SUSPICIOUS_IMPORT_PATTERNS = [
     re.compile(r"\bimport\s+subprocess\b"),
     re.compile(r"\bfrom\s+subprocess\s+import\b"),
-    re.compile(r"\bimport\s+os\b"),
-    re.compile(r"\bfrom\s+os\s+import\b"),
     re.compile(r"\bos\.exec"),
     re.compile(r"""require\s*\(\s*['"]child_process['"]\s*\)"""),
     re.compile(r"""require\s*\(\s*['"]net['"]\s*\)"""),
@@ -303,6 +443,30 @@ RE_BTC_WALLET = re.compile(
     r"|\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b"
 )
 
+_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _is_valid_btc_base58_address(addr: str) -> bool:
+    """Base58Check-validate a legacy ([13]-prefixed) Bitcoin address.
+
+    The base58 regex alone matches ordinary identifiers; a checksum pass
+    keeps only real addresses (25-byte payload whose last 4 bytes are the
+    double-SHA256 checksum of the first 21).
+    """
+    n = 0
+    for ch in addr:
+        idx = _BASE58_ALPHABET.find(ch)
+        if idx < 0:
+            return False
+        n = n * 58 + idx
+    leading_ones = len(addr) - len(addr.lstrip("1"))
+    body = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    payload = b"\x00" * leading_ones + body
+    if len(payload) != 25:
+        return False
+    checksum = hashlib.sha256(hashlib.sha256(payload[:21]).digest()).digest()[:4]
+    return payload[21:] == checksum
+
 RE_SENSITIVE_ENV = re.compile(
     r"\b(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_SECRET(?:_ACCESS_KEY)?"
     r"|AWS_ACCESS_KEY(?:_ID)?|GITHUB_TOKEN|GITLAB_TOKEN|SLACK_TOKEN"
@@ -319,6 +483,11 @@ RE_PASTE_SERVICE = re.compile(
 )
 
 RE_DNS_EXFIL = re.compile(r"\b(?:nslookup|dig|host)\s+.*?\$", re.IGNORECASE)
+
+# What may follow a sensitive env NAME for the occurrence to count as an
+# assignment rather than a read: optional closing quote+bracket (the
+# os.environ["NAME"] = x write form), optional whitespace, then a single "=".
+_RE_ENV_ASSIGN_FOLLOW = re.compile(r"""(?:["']\s*\])?\s*=(?!=)""")
 
 ALLOWED_DOTFILES = {
     ".gitignore", ".editorconfig", ".eslintrc", ".prettierrc",
@@ -343,7 +512,7 @@ SECURITY_PATTERNS: dict[str, list[tuple[re.Pattern, str, str, set[str] | None]]]
         (re.compile(r"\bexec\s*\("), "exec_call", "exec() call", {".py"}),
         (re.compile(r"__import__\s*\("), "dunder_import", "dynamic __import__() call", {".py"}),
         (re.compile(r"importlib\.import_module\s*\("), "importlib_import", "importlib dynamic import", {".py"}),
-        (re.compile(r"(?<!re\.)compile\s*\("), "compile_call", "compile() call", {".py"}),
+        (re.compile(r"(?<![\w.])compile\s*\("), "compile_call", "compile() call", {".py"}),
         (re.compile(r"getattr\s*\(.*,\s*['\"]system['\"]"), "getattr_system", "getattr() with 'system' attribute", {".py"}),
         (re.compile(r"\bFunction\s*\(|new\s+Function\s*\("), "js_function_constructor", "Function() constructor", {".js", ".ts", ".jsx", ".tsx"}),
         (re.compile(r"\b(?:Invoke-Expression|iex|Start-Process)\b", re.IGNORECASE), "powershell_exec", "PowerShell code execution", {".ps1", ".bat", ".cmd"}),
@@ -619,8 +788,11 @@ def pack_skill_zip(skill_root: Path) -> bytes:
         for fpath in sorted(skill_root.rglob("*")):
             if fpath.is_symlink() or not fpath.is_file():
                 continue
+            rel = fpath.relative_to(skill_root)
+            if "__pycache__" in rel.parts or fpath.suffix == ".pyc":
+                continue
             info = zipfile.ZipInfo(
-                filename=fpath.relative_to(skill_root).as_posix(),
+                filename=rel.as_posix(),
                 date_time=_FIXED_ZIP_DATE,
             )
             info.compress_type = zipfile.ZIP_STORED
@@ -733,17 +905,32 @@ def extract_findings(text: str, file_suffix: str | None = None) -> dict:
         "encoded_urls": [],
         "emails": [],
         "env_var_references": [],
+        "env_var_references_in_docs": [],
         "shell_commands": [],
+        "shell_commands_in_docs": [],
         "sensitive_file_paths": [],
+        "sensitive_file_paths_in_docs": [],
         "suspicious_imports": [],
+        "suspicious_imports_in_docs": [],
         "security_patterns": [],
         "invisible_unicode": [],
         "private_ips": [],
         "crypto_wallets": [],
         "sensitive_env_var_names": [],
+        "sensitive_env_var_names_in_docs": [],
+        "sensitive_env_var_assignments": [],
         "paste_service_urls": [],
         "dns_exfil_patterns": [],
     }
+
+    # Prose files (docs, configs, anything outside SCRIPT_EXTENSIONS) route
+    # command/env/path/import findings to low-confidence *_in_docs keys: the
+    # signal still reaches LLM verification (SKILL.md prose is an attack
+    # surface) without dominating numeric severity.
+    is_script = file_suffix in SCRIPT_EXTENSIONS
+
+    def _bucket(base: str) -> str:
+        return base if is_script else base + "_in_docs"
 
     findings["urls"] = sorted(set(RE_URL.findall(text)))
     findings["data_uris"] = sorted(set(RE_DATA_URI.findall(text)))
@@ -764,34 +951,52 @@ def extract_findings(text: str, file_suffix: str | None = None) -> dict:
     findings["base64_strings"] = b64_entries
     findings["encoded_urls"] = sorted(set(RE_ENCODED_URL.findall(text)))
     findings["emails"] = sorted(set(RE_EMAIL.findall(text)))
-    findings["env_var_references"] = sorted(set(RE_ENV_VAR.findall(text)))
+    findings[_bucket("env_var_references")] = sorted(set(RE_ENV_VAR.findall(text)))
 
     text_lower = text.lower()
     found_cmds = set()
     for pattern, name in DANGEROUS_COMMANDS:
         if pattern.search(text_lower):
             found_cmds.add(name)
-    findings["shell_commands"] = sorted(found_cmds)
+    findings[_bucket("shell_commands")] = sorted(found_cmds)
 
     found_paths = set()
-    for sp in SENSITIVE_PATHS:
-        if sp in text:
+    for sp, sp_pattern in SENSITIVE_PATH_PATTERNS:
+        if sp_pattern.search(text):
             found_paths.add(sp)
-    findings["sensitive_file_paths"] = sorted(found_paths)
+    findings[_bucket("sensitive_file_paths")] = sorted(found_paths)
 
     found_imports = set()
     for pat in SUSPICIOUS_IMPORT_PATTERNS:
         for m in pat.finditer(text):
             found_imports.add(m.group(0))
-    findings["suspicious_imports"] = sorted(found_imports)
+    findings[_bucket("suspicious_imports")] = sorted(found_imports)
 
     findings["private_ips"] = sorted(set(RE_PRIVATE_IP.findall(text)))
 
     eth_wallets = set(RE_ETH_WALLET.findall(text))
-    btc_wallets = set(RE_BTC_WALLET.findall(text))
+    btc_wallets = {
+        addr for addr in RE_BTC_WALLET.findall(text)
+        if addr.startswith("bc1") or _is_valid_btc_base58_address(addr)
+    }
     findings["crypto_wallets"] = sorted(eth_wallets | btc_wallets)
 
-    findings["sensitive_env_var_names"] = sorted(set(RE_SENSITIVE_ENV.findall(text)))
+    # A name followed by "=" (template line "NAME=", spaced assignment
+    # "NAME = x", or env write os.environ["NAME"] = x) is an assignment;
+    # any other position counts as a potential read. "==" comparisons are
+    # reads. Reads win: a name read anywhere stays high-signal.
+    env_reads: set[str] = set()
+    env_assignments: set[str] = set()
+    for m in RE_SENSITIVE_ENV.finditer(text):
+        if _RE_ENV_ASSIGN_FOLLOW.match(text, m.end()):
+            env_assignments.add(m.group(0))
+        else:
+            env_reads.add(m.group(0))
+    if is_script:
+        findings["sensitive_env_var_names"] = sorted(env_reads)
+        findings["sensitive_env_var_assignments"] = sorted(env_assignments - env_reads)
+    else:
+        findings["sensitive_env_var_names_in_docs"] = sorted(env_reads | env_assignments)
 
     findings["paste_service_urls"] = sorted(set(RE_PASTE_SERVICE.findall(text)))
 
@@ -1101,6 +1306,9 @@ def build_report(
         "security_patterns", "invisible_unicode", "private_ips",
         "crypto_wallets", "sensitive_env_var_names",
         "paste_service_urls", "dns_exfil_patterns",
+        "env_var_references_in_docs", "shell_commands_in_docs",
+        "sensitive_file_paths_in_docs", "suspicious_imports_in_docs",
+        "sensitive_env_var_names_in_docs", "sensitive_env_var_assignments",
     ]
     counts = {}
     for key in finding_keys:
@@ -1189,12 +1397,17 @@ def scan_url_remote(url_target: str, server_base: str) -> dict:
         return {"status": "error", "error": f"Scan request failed: {exc}"}
 
 
-def _format_report(report: dict) -> str:
-    """Render the server response as Markdown for the calling LLM."""
+def _format_report(report: dict, local_name: str = "") -> str:
+    """Render the server response as Markdown for the calling LLM.
+
+    ``local_name`` is the frontmatter-resolved skill name from the scanned
+    directory; it wins over the server-supplied ``skill_name``, which can be
+    a raw content hash for skills the server has not seen named before.
+    """
     filtered = {k: report[k] for k in REPORT_KEYS if k in report}
     lines: list[str] = []
 
-    skill = filtered.get("skill_name", "Unknown")
+    skill = local_name or filtered.get("skill_name") or "Unknown"
     severity = filtered.get("adjusted_risk_level") or filtered.get("risk_level", "UNKNOWN")
 
     lines.append(f"# Skill Scan: {skill}")
@@ -1256,6 +1469,7 @@ def _run_scan(args) -> None:
 
     skill_root, tmpdir = resolve_target(args.target)
     print(f"Skill root: {skill_root}", file=sys.stderr)
+    local_name = parse_skill_frontmatter(skill_root).get("name", "") or skill_root.name
 
     print("Packing normalized archive...", file=sys.stderr)
     archive_bytes = pack_skill_zip(skill_root)
@@ -1274,7 +1488,7 @@ def _run_scan(args) -> None:
         print(f"  [WARN] Cache check failed: {cached.get('error', 'unknown')}", file=sys.stderr)
     elif cached.get("status") == "found" and cached.get("report"):
         print("  Report found in cache.", file=sys.stderr)
-        print(_format_report(cached["report"]))
+        print(_format_report(cached["report"], local_name=local_name))
         _cleanup_temps(scan_temp_dirs, tmpdir)
         return
 
@@ -1307,7 +1521,7 @@ def _run_scan(args) -> None:
         print(f"Error: could not retrieve report from server — {error}", file=sys.stderr)
         sys.exit(1)
 
-    print(_format_report(result))
+    print(_format_report(result, local_name=local_name))
 
     _cleanup_temps(scan_temp_dirs, tmpdir)
 

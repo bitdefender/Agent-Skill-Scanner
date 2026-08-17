@@ -9,7 +9,9 @@ Security analysis tool for agent skills. Scans all files inside a skill, extract
 
 ## Setup
 
-Install dependencies before first use:
+Requires Python 3.12 or 3.13 (3.13 recommended; 3.14 currently fails at
+`pip install` on some platforms due to an upstream libexpat packaging issue).
+Use an isolated virtual environment. Install dependencies before first use:
 
 ```bash
 pip install -r {baseDir}/requirements.txt
@@ -20,6 +22,14 @@ pip install -r {baseDir}/requirements.txt
 ### Scan (default)
 
 Performs local extraction of security artifacts and sends them to the backend server for LLM-powered analysis. No files are uploaded — only metadata and extracted indicators.
+
+**Network behavior:** every scan contacts the analysis backend to check for
+scanner updates (disable with `--no-update`) and to submit findings. Updates
+are downloaded from the backend and are applied only after their Ed25519
+signature is verified against a public key pinned in this scanner; unsigned
+or tampered payloads are rejected and the existing install is left untouched.
+The optional embedding step downloads a model from HuggingFace Hub on first
+use.
 
 ```bash
 python3 {baseDir}/scripts/scan_skill.py <target>
@@ -53,9 +63,9 @@ python3 {baseDir}/scripts/scan_skill.py <target> --mode submit
 ## Instructions
 
 - By default, when a user asks for a scan, use the **scan** mode.
-- Do **not** perform analysis yourself — only use the report received from the script script.
-- Do **not** interpret the results, the script will provide the report in markdown format.
-- If the script scanner exits with an error (server unreachable, analysis failed, etc.), inform the user of the specific reason and do **not** attempt to produce your own analysis.
+- Do **not** substitute your own verdict for the report — the report's severity and findings are the scanner's output. You **may** verify individual findings against the skill's source before presenting them as confirmed, and note any you could not reproduce.
+- Present the report's markdown as received; when relaying findings as fact, distinguish verified findings from unverified ones.
+- If the script scanner exits with an error (server unreachable, analysis failed, etc.), inform the user of the specific reason and do **not** attempt to produce your own full analysis in its place.
 - Do **not** run submit mode unless the user specifically requests it.
 
 ## Workflow
