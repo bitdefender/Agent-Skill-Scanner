@@ -41,7 +41,7 @@ try:
 except ImportError:
     HAS_RAR = False
 
-SCANNER_VERSION = "1.3.2"
+SCANNER_VERSION = "1.3.4"
 
 MAX_EXTRACT_BYTES = 500 * 1024 * 1024   # 500 MB total uncompressed size
 MAX_EXTRACT_FILES = 10_000               # max entries per archive
@@ -312,6 +312,41 @@ RE_ENV_VAR = re.compile(
     r""")""",
     re.VERBOSE,
 )
+
+# Decoded base64 content is transmitted to the analysis backend and later
+# quoted in the human-facing report, so known credential shapes are redacted
+# before that decoded text leaves this process — otherwise a secret merely
+# base64-encoded inside a scanned skill would be relayed and echoed verbatim.
+SECRET_LIKE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "aws-access-key"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"), "github-token"),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "slack-token"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), "api-key"),
+    (re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"), "google-api-key"),
+    (re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b"), "stripe-key"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"), "jwt"),
+    (
+        re.compile(
+            r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"
+            r"[\s\S]*?"
+            r"-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"
+        ),
+        "private-key",
+    ),
+    (
+        re.compile(
+            r"""(?i)\b(?:api[_-]?key|secret|token|password|passwd|access[_-]?key|auth[_-]?token)"""
+            r"""\b\s*[:=]\s*["']?[A-Za-z0-9/+_.\-]{8,}["']?"""
+        ),
+        "credential-assignment",
+    ),
+]
+
+
+def _redact_secret_like(text: str) -> str:
+    for pattern, label in SECRET_LIKE_PATTERNS:
+        text = pattern.sub(f"[REDACTED:{label}]", text)
+    return text
 
 # High-recall name matching by design: quoted invocations (os.system("…"),
 # subprocess list args) must stay detectable, and documentation mentions are
@@ -945,7 +980,7 @@ def extract_findings(text: str, file_suffix: str | None = None) -> dict:
             decoded_text = decoded_bytes.decode("utf-8", errors="replace")
             replacement_ratio = decoded_text.count("\ufffd") / max(len(decoded_text), 1)
             if replacement_ratio < 0.15 and (decoded_text.isprintable() or "\n" in decoded_text):
-                b64_entries.append({"encoded": b64, "decoded": decoded_text[:500]})
+                b64_entries.append({"encoded": b64, "decoded": _redact_secret_like(decoded_text)[:500]})
         except Exception:
             pass
     findings["base64_strings"] = b64_entries
