@@ -1,6 +1,6 @@
 ---
 name: agent-skill-scanner
-version: 1.3.4
+version: 1.3.5
 description: Perform security analysis on an agent skill by scanning all files for URLs, IPs, domains, base64 strings, encoded URLs, emails, env var references, shell commands, sensitive paths, and suspicious imports. Recursively extracts archives. Submits results to a remote analysis server for an LLM-generated security report. Use when the user asks to scan, audit, or analyze a skill for security risks.
 ---
 

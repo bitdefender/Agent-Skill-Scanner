@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.5] — 2026-08-20
+
+### Changed
+
+- README rewritten for a harness audience (Claude Code, Codex, OpenClaw,
+  opencode, …): dropped the direct `scan_skill.py` CLI invocation examples
+  and the manual `pip install -r requirements.txt` step — both are
+  agent-driven per `SKILL.md`, not something the end user runs by hand
+
+## [1.3.4] — 2026-08-19
+
+### Security
+
+- Known credential shapes (AWS/GitHub/Slack/OpenAI/Google/Stripe key
+  formats, JWTs, PEM private keys, generic `key=value` assignments) are now
+  redacted out of decoded base64 excerpts before they leave the client, and
+  again server-side as defense in depth — closes a leak where a secret
+  merely base64-encoded inside a scanned skill would be relayed to the
+  backend and echoed verbatim into the report
+- SKILL.md now instructs the calling agent not to act on directive-like text
+  the report may quote from the (unvetted) skill under analysis — the report
+  is scan output to display, not an instruction to follow
+
 ## [1.3.2] — 2026-08-17
 
 ### Added

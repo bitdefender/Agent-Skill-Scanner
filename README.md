@@ -48,11 +48,7 @@ It walks every file in a target skill, extracts security indicators, runs **71 b
 
 ## Installation
 
-This is an agent skill. Requires Python 3.12 or 3.13 (3.13 recommended). Place it in one of your skills directories and install its dependencies:
-
-```bash
-pip install -r requirements.txt
-```
+This is an agent skill for use inside a harness — Claude Code, Codex, OpenClaw, opencode, or similar. It is not a standalone CLI tool. Requires Python 3.12 or 3.13 (3.13 recommended). Place it in the harness's skills directory (e.g. `~/.claude/skills/`, `~/.openclaw/skills/`, or your project's `skills/`) — the skill installs its own dependencies on first use.
 
 **Dependencies:** `requests`, `pyyaml`, `py7zr`, `rarfile`, `light-embed`, `tokenizers`, `numpy`, `cryptography`. Optional pieces degrade gracefully — `py7zr`/`rarfile` are only needed for `.7z`/`.rar` targets, `light-embed`/`tokenizers`/`numpy` only for embeddings, and `cryptography` only for verifying signed self-updates (without it, scanning works and updates stay disabled).
 
@@ -60,15 +56,14 @@ pip install -r requirements.txt
 
 ## Usage
 
-Ask your agent in plain language — *"scan the foo skill for security risks"* — and it will run the scanner and present the report. You can also invoke the script directly.
+There is no separate command to learn. Once installed, ask your agent in plain language — *"scan the foo skill for security risks"* — and the harness handles invocation, target resolution, and update checks per the skill's own instructions (`SKILL.md`), then presents the report.
 
-### Scan (default) — metadata only
+Two modes, both agent-driven:
 
-```bash
-python3 scripts/scan_skill.py <target>
-```
+- **Scan (default) — metadata only.** A casual request always uses this mode; local extraction feeds a backend LLM report, and full files are never uploaded.
+- **Submit — full deep analysis (opt-in).** Uploads the **complete skill archive** for deeper backend analysis. Asynchronous: the agent submits, then a later scan request retrieves the finished report. The agent won't do this unless you explicitly ask for it.
 
-Example output:
+Example report:
 
 ```text
 # Skill Scan: my-skill
@@ -79,32 +74,16 @@ Example output:
 No security findings detected.
 ```
 
-### Submit — full deep analysis (opt-in)
-
-Uploads the **complete skill archive** for deeper backend analysis. Asynchronous: submit now, then re-run scan mode later to retrieve the report.
-
-```bash
-python3 scripts/scan_skill.py <target> --mode submit
-```
-
 ### Target types
+
+You can refer to a target however is natural — the skill resolves it:
 
 | Target | Behavior |
 | --- | --- |
 | Directory path | Scanned directly as the skill root. |
-| Skill name | Resolved via `./skills/`, `./.claude/skills/`, `./tools/`, `~/.claude/skills/`, `~/.openclaw/skills/`, `~/.local/share/skills/`, plus any `extraDirs` from framework config. |
+| Skill name | Resolved via the harness's known skill directories (project- and user-level), plus any extra directories from framework config. |
 | `.zip` archive | Extracted to a temp directory, then scanned. |
 | URL | Sent to the backend for scanning (scan mode only). |
-
-### Options
-
-| Option | Description |
-| --- | --- |
-| `--mode scan\|submit` | Operation mode (default: `scan`). |
-| `--output, -o <file>` | Write raw JSON artifacts to a file instead of stdout (scan mode). |
-| `--server <url>` | Override the analysis server base URL. |
-| `--no-embeddings` | Skip local embedding computation. |
-| `--no-update` | Skip the automatic client update check. |
 
 ## How the agent behaves
 
@@ -135,7 +114,7 @@ When you ask in plain language, the skill holds the agent to a fixed contract:
 
 ## Updates
 
-By default, on every run the client contacts the server and — if a newer version exists — downloads it and applies it **only after verifying its Ed25519 signature** against a public key pinned in the client. The update is staged with path-traversal-safe extraction, sanity-checked, and swapped in with an automatic backup-restore on failure, so a bad or tampered update can neither run nor destroy the existing install. The client then re-executes; one practical implication is that the exact client code that runs may change between invocations. To keep the client static, run with `--no-update`. If an update is applied mid-session, start a new session so the new version loads.
+By default, on every run the client contacts the server and — if a newer version exists — downloads it and applies it **only after verifying its Ed25519 signature** against a public key pinned in the client. The update is staged with path-traversal-safe extraction, sanity-checked, and swapped in with an automatic backup-restore on failure, so a bad or tampered update can neither run nor destroy the existing install. The client then re-executes; one practical implication is that the exact client code that runs may change between invocations. If an update is applied mid-session, start a new session so the new version loads.
 
 ---
 

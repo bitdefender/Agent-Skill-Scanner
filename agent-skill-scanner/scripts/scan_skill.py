@@ -41,7 +41,7 @@ try:
 except ImportError:
     HAS_RAR = False
 
-SCANNER_VERSION = "1.3.4"
+SCANNER_VERSION = "1.3.5"
 
 MAX_EXTRACT_BYTES = 500 * 1024 * 1024   # 500 MB total uncompressed size
 MAX_EXTRACT_FILES = 10_000               # max entries per archive
