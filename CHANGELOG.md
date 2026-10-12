@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.10] — 2026-10-12
+
+### Fixed
+  - Verdicts no longer inflate with the number of findings; the score follows the worst confirmed finding, and findings beyond the LLM review cap are discounted.
+  - Detector calibration: bare command words in code files only count as real invocations; analytics vendor names need SDK shape; `${NAME}` in JS/TS is not an env read; DNS exfiltration needs data in a subdomain; loopback addresses and URLs are no longer findings.
+  - Files over 256 KB are scanned but not embedded, and the per-file embedding timeout actually releases the scan.
+  - Finding descriptions no longer show doubled braces; the LLM prompt notes that a command name in code is not evidence of execution.
+
 ## [1.3.5] — 2026-08-20
 
 ### Changed

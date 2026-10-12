@@ -41,7 +41,7 @@ try:
 except ImportError:
     HAS_RAR = False
 
-SCANNER_VERSION = "1.3.5"
+SCANNER_VERSION = "1.3.10"
 
 MAX_EXTRACT_BYTES = 500 * 1024 * 1024   # 500 MB total uncompressed size
 MAX_EXTRACT_FILES = 10_000               # max entries per archive
@@ -293,7 +293,13 @@ ARCHIVE_EXTENSIONS = {
 
 RE_URL = re.compile(
     r"(?:https?|ftp|ftps|sftp|smtp|pop3|imap|ssh|git|svn|smb|telnet|ldaps?|gopher|ws|wss)"
-    r"://[^\s<>\"')\]]+"
+    r"://[^\s<>\"')\]`{}]+"
+)
+# `http://127.0.0.1:9222/...`, `ws://localhost:11434`: the skill's own machine,
+# not a network indicator. Lookalikes (`localhost.evil.com`) do not match.
+_RE_LOOPBACK_URL = re.compile(
+    r"^\w+://(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\])(?::\d+)?(?:/|$)",
+    re.IGNORECASE,
 )
 RE_DATA_URI = re.compile(r"data:[a-zA-Z0-9]+/[a-zA-Z0-9.+\-]+(?:;[a-zA-Z0-9=]+)*,[A-Za-z0-9+/=]+")
 RE_JAVASCRIPT_URI = re.compile(r"javascript:\S+", re.IGNORECASE)
@@ -308,7 +314,7 @@ RE_ENV_VAR = re.compile(
     r"""\$\{[A-Z_][A-Z0-9_]*\}"""  # ${VAR}
     r"""|\$[A-Z_][A-Z0-9_]*"""  # $VAR
     r"""|os\.environ\s*[\[(]"""  # os.environ[ or os.environ(
-    r"""|process\.env\.[A-Z_]"""  # process.env.VAR
+    r"""|process\.env\.[A-Z_][A-Z0-9_]*"""  # process.env.VAR
     r""")""",
     re.VERBOSE,
 )
@@ -380,6 +386,40 @@ DANGEROUS_COMMANDS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bopenssl\b"), "openssl"),
     (re.compile(r"\bgpg\b"), "gpg"),
 ]
+
+# Immediately after a command word: `.prop`, `(call`, `: key`, `= assign`, `, list`.
+_RE_NOT_INVOCATION_AFTER = re.compile(r"\.|\s*[(:=,]")
+# A token that looks like a command argument (after stripping a leading quote
+# or bracket): flag, path, URL, host:port, user@host, number, interpolation,
+# printf placeholder. Prose ("nc and nr", "mount point") never has one.
+_RE_ARG_TOKEN = re.compile(r"""^["'\[(]*(?:-\w|\+\w|--|[/~$.@{%]|\d|\w+[.:@/]\w|\w*://)""")
+_SHELL_EXTENSIONS = {".sh", ".bash", ".ps1", ".bat", ".cmd"}
+
+
+def _is_identifier_use(text: str, m: re.Match, in_code: bool) -> bool:
+    """True when a command-word match is not a command invocation.
+
+    Everywhere: member access, call, object key, type annotation, assignment,
+    list element, interpolation (``obj.nc.map(…)``, ``TURN.mount(…)``,
+    ``{ nc: [] }``, ``mount: number``, ``nc = columns``, ``${nc}``).
+
+    In code files (``in_code``: Python/JS/TS, not shell) a command can only be
+    invoked from inside a string literal, so the match must have a quote or
+    backtick before it on the line AND one of the next three tokens must look
+    like an argument (``"nc -e /bin/sh"``, ``f"nc {host}"``, ``["nc",
+    "evil.example"]``). Bare identifiers (``r * nc + c``) and prose inside
+    strings (``"nr = rows, nc = columns"``) fail one of the two. Multi-word
+    patterns (``rm -rf``, ``dd if=``) already carry their argument."""
+    if text[m.start() - 1 : m.start()] in (".", "{") or _RE_NOT_INVOCATION_AFTER.match(text, m.end()):
+        return True
+    if not in_code or len(m.group(0).split()) > 1:
+        return False
+    line_start = text.rfind("\n", 0, m.start()) + 1
+    if not any(q in text[line_start : m.start()] for q in "\"'`"):
+        return True
+    line_end = text.find("\n", m.end())
+    rest = text[m.end() : line_end if line_end >= 0 else len(text)]
+    return not any(_RE_ARG_TOKEN.match(tok) for tok in rest.split()[:3])
 
 SENSITIVE_PATHS = [
     "/etc/passwd",
@@ -460,16 +500,19 @@ SCRIPT_EXTENSIONS = {
     ".rb", ".pl", ".lua", ".ps1", ".bat", ".cmd",
 }
 
+_JS_EXTENSIONS = {".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"}
+
 RE_INVISIBLE_UNICODE = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff]")
 
+# Loopback (127.x, localhost, ::1) is deliberately absent: a skill talking to
+# its own machine (headless Chrome, a local model server) is not a network
+# signal, and each loopback mention used to yield up to four findings.
 RE_PRIVATE_IP = re.compile(
-    r"\b(?:127\.0\.0\.1|0\.0\.0\.0"
+    r"\b(?:0\.0\.0\.0"
     r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
     r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
     r"|192\.168\.\d{1,3}\.\d{1,3}"
     r"|169\.254\.169\.254)\b"
-    r"|\blocalhost\b"
-    r"|\[::1\]"
 )
 
 RE_ETH_WALLET = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
@@ -517,7 +560,16 @@ RE_PASTE_SERVICE = re.compile(
     re.IGNORECASE,
 )
 
-RE_DNS_EXFIL = re.compile(r"\b(?:nslookup|dig|host)\s+.*?\$", re.IGNORECASE)
+# Command at a command position (not `url.host`, `--host`), then at most three
+# argument tokens free of prose/assignment punctuation, one of which carries a
+# shell expansion (`$VAR`, `${VAR}`, `$(…)`) followed by a `.label` — data
+# smuggled out as a subdomain. `host ${host}: n tiles` has no label after the
+# expansion; the former `host\s+.*?\$` fired on any line with "host" and a `$`.
+RE_DNS_EXFIL = re.compile(
+    r"(?<![\w.\-/@{$])(?:nslookup|dig|host)\s+(?:[^\s:;|&=]+\s+){0,3}[^\s:;|&=]*"
+    r"\$(?:\([^)]*\)|\{[^}]*\}|\w+)[^\s:;|&=]*\.[\w$]",
+    re.IGNORECASE,
+)
 
 # What may follow a sensitive env NAME for the occurrence to count as an
 # assignment rather than a read: optional closing quote+bracket (the
@@ -540,6 +592,8 @@ PACKAGE_FILES = {
 # Each tuple: (compiled_regex, pattern_name, description, file_types_or_None)
 # file_types=None means the pattern applies to all text files.
 # ---------------------------------------------------------------------------
+
+_TRACKER_VENDORS = r"(?:amplitude|mixpanel|hotjar|fullstory|posthog|plausible|matomo|piwik)"
 
 SECURITY_PATTERNS: dict[str, list[tuple[re.Pattern, str, str, set[str] | None]]] = {
     "code_execution": [
@@ -573,7 +627,7 @@ SECURITY_PATTERNS: dict[str, list[tuple[re.Pattern, str, str, set[str] | None]]]
         (re.compile(r"socket\.socket\s*\("), "raw_socket", "raw socket creation", {".py"}),
         (re.compile(r"http\.client\.(HTTPConnection|HTTPSConnection)"), "http_client", "http.client connection", {".py"}),
         (re.compile(r"\bfetch\s*\("), "fetch_api", "fetch() API call", {".js", ".ts", ".jsx", ".tsx"}),
-        (re.compile(r"https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"), "http_raw_ip", "HTTP connection to raw IP address", None),
+        (re.compile(r"https?://(?!127\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"), "http_raw_ip", "HTTP connection to raw IP address", None),
     ],
     "file_operations": [
         (re.compile(r"open\s*\(.*['\"]w"), "file_write", "file opened for writing", {".py"}),
@@ -618,7 +672,9 @@ SECURITY_PATTERNS: dict[str, list[tuple[re.Pattern, str, str, set[str] | None]]]
         (re.compile(r"\.\./\.\./\.\."), "relative_path_escape", "relative path escape (triple parent)", None),
     ],
     "telemetry": [
-        (re.compile(r"google[_-]?analytics|gtag\(|analytics\.js|segment\.(?:io|com)|mixpanel|amplitude|hotjar|fullstory|posthog|plausible|matomo|piwik|tracking[_-]?pixel|navigator\.sendBeacon|phone[_-]?home", re.IGNORECASE), "telemetry_tracking", "analytics or tracking code", None),
+        # Vendor names only count with SDK shape (`amplitude.init(`, `@posthog/`,
+        # `mixpanel.com`): "amplitude" and "plausible" are ordinary words.
+        (re.compile(rf"google[_-]?analytics|gtag\(|analytics\.js|segment\.(?:io|com)|@{_TRACKER_VENDORS}/|\b{_TRACKER_VENDORS}\.(?:com|io|cloud|js)\b|\b{_TRACKER_VENDORS}\.\w+\s*\(|tracking[_-]?pixel|navigator\.sendBeacon|phone[_-]?home", re.IGNORECASE), "telemetry_tracking", "analytics or tracking code", None),
     ],
     "symlink_attack": [
         (re.compile(r"\bln\s+-s\b"), "ln_symlink", "symbolic link creation", {".sh", ".bash"}),
@@ -967,10 +1023,10 @@ def extract_findings(text: str, file_suffix: str | None = None) -> dict:
     def _bucket(base: str) -> str:
         return base if is_script else base + "_in_docs"
 
-    findings["urls"] = sorted(set(RE_URL.findall(text)))
+    findings["urls"] = sorted(u for u in set(RE_URL.findall(text)) if not _RE_LOOPBACK_URL.match(u))
     findings["data_uris"] = sorted(set(RE_DATA_URI.findall(text)))
     findings["javascript_uris"] = sorted(set(RE_JAVASCRIPT_URI.findall(text)))
-    findings["ips"] = sorted(set(RE_IPV4.findall(text)))
+    findings["ips"] = sorted(ip for ip in set(RE_IPV4.findall(text)) if not ip.startswith("127."))
 
     raw_b64 = sorted(set(RE_BASE64.findall(text)))
     b64_entries: list[dict] = []
@@ -986,12 +1042,17 @@ def extract_findings(text: str, file_suffix: str | None = None) -> dict:
     findings["base64_strings"] = b64_entries
     findings["encoded_urls"] = sorted(set(RE_ENCODED_URL.findall(text)))
     findings["emails"] = sorted(set(RE_EMAIL.findall(text)))
-    findings[_bucket("env_var_references")] = sorted(set(RE_ENV_VAR.findall(text)))
+    env_refs = set(RE_ENV_VAR.findall(text))
+    if file_suffix in _JS_EXTENSIONS:
+        # `${NAME}` in JS/TS is template-literal interpolation, not a shell env read
+        env_refs = {e for e in env_refs if not e.startswith("${")}
+    findings[_bucket("env_var_references")] = sorted(env_refs)
 
     text_lower = text.lower()
     found_cmds = set()
+    in_code = is_script and file_suffix not in _SHELL_EXTENSIONS
     for pattern, name in DANGEROUS_COMMANDS:
-        if pattern.search(text_lower):
+        if any(not _is_identifier_use(text_lower, m, in_code) for m in pattern.finditer(text_lower)):
             found_cmds.add(name)
     findings[_bucket("shell_commands")] = sorted(found_cmds)
 

@@ -30,6 +30,12 @@ _TOKENIZER = None
 
 MODEL_LOAD_TIMEOUT_S = 120
 PER_FILE_TIMEOUT_S = 30
+# Files above this get no vector and are only scanned. Embeddings exist to
+# spot near-duplicate skills and skip redundant scans; a mean over thousands
+# of chunks of a generated HTML page carries no such signal, and dense markup
+# encodes at ~18 KB/s on CPU, so 1.6 MB cost ~90 s. 256 KB stays inside
+# PER_FILE_TIMEOUT_S.
+MAX_EMBED_BYTES = 256 * 1024
 
 
 def _warn(msg: str) -> None:
@@ -77,13 +83,18 @@ def _embed_text(text: str):
 
 
 def _run_with_timeout(fn, timeout_s, label="operation"):
-    """Run *fn* in a thread with a timeout; returns result or raises."""
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(fn)
-        try:
-            return future.result(timeout=timeout_s)
-        except FuturesTimeoutError:
-            raise TimeoutError(f"{label} timed out after {timeout_s}s")
+    """Run *fn* in a thread with a timeout; returns result or raises.
+
+    The pool is shut down without waiting: a ``with`` block would join the
+    worker on exit, so the caller would block for the full job anyway.
+    """
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(fn).result(timeout=timeout_s)
+    except FuturesTimeoutError:
+        raise TimeoutError(f"{label} timed out after {timeout_s}s")
+    finally:
+        pool.shutdown(wait=False)
 
 
 def compute_embeddings(entries: list[dict], read_text_fn) -> None:
@@ -111,6 +122,10 @@ def compute_embeddings(entries: list[dict], read_text_fn) -> None:
     for entry in entries:
         abs_path = Path(entry["_abs_path"])
         try:
+            if abs_path.is_file() and abs_path.stat().st_size > MAX_EMBED_BYTES:
+                _warn(f"Skipping embedding for {abs_path.name} (> {MAX_EMBED_BYTES // 1024} KB)")
+                entry["embedding"] = None
+                continue
             text = read_text_fn(abs_path) if abs_path.is_file() else None
         except Exception as exc:
             _warn(f"Could not read {abs_path.name}: {exc}")
