@@ -48,9 +48,13 @@ It walks every file in a target skill, extracts security indicators, runs **71 b
 
 ## Installation
 
-This is an agent skill for use inside a harness — Claude Code, Codex, OpenClaw, opencode, or similar. It is not a standalone CLI tool. Requires Python 3.12 or 3.13 (3.13 recommended). Place it in the harness's skills directory (e.g. `~/.claude/skills/`, `~/.openclaw/skills/`, or your project's `skills/`) — the skill installs its own dependencies on first use.
+This is an agent skill for use inside a harness — Claude Code, Codex, OpenClaw, opencode, or similar. It is not a standalone CLI tool. Requires Python 3.12–3.15 (3.13 or 3.14 recommended). Place it in the harness's skills directory (e.g. `~/.claude/skills/`, `~/.openclaw/skills/`, or your project's `skills/`) — the skill installs its own dependencies on first use.
 
 **Dependencies:** `requests`, `pyyaml`, `py7zr`, `rarfile`, `light-embed`, `tokenizers`, `numpy`, `cryptography`. Optional pieces degrade gracefully — `py7zr`/`rarfile` are only needed for `.7z`/`.rar` targets, `light-embed`/`tokenizers`/`numpy` only for embeddings, and `cryptography` only for verifying signed self-updates (without it, scanning works and updates stay disabled).
+
+> On Python 3.15, `requirements.txt` skips the embedding stack (`light-embed` needs `onnxruntime`, which has no cp315 wheels yet). Scans still run in full; only the embedding step is omitted, with a warning.
+
+> If `pip install` crashes on macOS with `ValueError: invalid literal for int() with base 10: ''` (and `python -c "import pyexpat"` fails), the interpreter is at fault, not the scanner: some builds, such as Homebrew `python@3.14`, are compiled against a newer expat than the OS ships. Recreate the venv on a uv-managed Python (`uv venv --managed-python --python 3.14 .venv`), which bundles its own expat, or update the OS.
 
 > `.rar` extraction also requires a system `unrar`/`unar` binary on your `PATH` (a requirement of the `rarfile` library).
 
