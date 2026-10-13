@@ -1,6 +1,6 @@
 ---
 name: agent-skill-scanner
-version: 1.3.10
+version: 1.3.11
 description: Perform security analysis on an agent skill by scanning all files for URLs, IPs, domains, base64 strings, encoded URLs, emails, env var references, shell commands, sensitive paths, and suspicious imports. Recursively extracts archives. Submits results to a remote analysis server for an LLM-generated security report. Use when the user asks to scan, audit, or analyze a skill for security risks.
 ---
 
@@ -10,18 +10,37 @@ Security analysis tool for agent skills. Scans all files inside a skill, extract
 
 ## Setup
 
-Requires Python 3.12 or 3.13 (3.13 recommended; 3.14 currently fails at
-`pip install` on some platforms due to an upstream libexpat packaging issue).
-Use an isolated virtual environment. Install dependencies before first use:
+Requires Python 3.12–3.15 (3.13 or 3.14 recommended). Use an isolated
+virtual environment and install dependencies before first use:
 
 ```bash
 pip install -r {baseDir}/requirements.txt
+```
+
+With uv, prefer a uv-managed interpreter (see the libexpat note below):
+
+```bash
+uv venv --managed-python --python 3.14 .venv
+uv pip install --python .venv -r {baseDir}/requirements.txt
 ```
 
 **Runtime dependencies** (installed by the command above): `requests`,
 `pyyaml`, `py7zr` (.7z support), `rarfile` (.rar support), `light-embed`,
 `tokenizers`, `numpy` (embeddings), `cryptography` (signed-update
 verification).
+
+**Python 3.15:** the embedding packages are skipped, because `light-embed`
+depends on `onnxruntime`, which does not publish cp315 wheels yet. Scans
+still run in full; only the embedding step is omitted, with a warning.
+
+**`pip install` crashes on macOS** with `ValueError: invalid literal for
+int() with base 10: ''` (raised in pip's `truststore/_macos.py`), and
+`python -c "import pyexpat"` fails: this comes from the interpreter, not the
+scanner. Without pyexpat, Python cannot read the macOS version, and pip
+cannot start. Some builds, such as Homebrew `python@3.14`, are compiled against
+expat 2.7.2 or newer but load the operating system's libexpat at runtime, so
+they break on systems whose copy is older. Recreate the venv on a uv-managed
+Python, which bundles its own expat, or update the OS.
 
 **Optional system binary:** `.rar` extraction additionally requires `unrar`
 or `unar` on PATH; without it, `.rar` archives inside a skill are skipped

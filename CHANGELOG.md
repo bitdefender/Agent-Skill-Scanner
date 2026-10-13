@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.11] — 2026-10-13
+
+### Changed
+
+- The embedding stack (`light-embed`, `tokenizers`, `numpy`) is optional:
+  skipped by `requirements.txt` on Python 3.15+, where `onnxruntime` has no
+  wheels yet. Scans run in full without it; only the embedding step is
+  omitted, with a warning.
+- `embeddings.py` no longer imports numpy unconditionally, so a missing
+  embedding stack degrades to "skip embeddings" instead of crashing the
+  scanner at import time.
+- SKILL.md setup: supported Python range is 3.12–3.15, with a uv recipe and
+  a note on the macOS `pip` / libexpat crash seen with Homebrew Python.
+
 ## [1.3.10] — 2026-10-12
 
 ### Fixed

@@ -12,9 +12,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
-import numpy as np
-
 try:
+    import numpy as np
     from light_embed import TextEmbedding
     from tokenizers import Tokenizer
 
@@ -106,7 +105,8 @@ def compute_embeddings(entries: list[dict], read_text_fn) -> None:
             Non-text files (where this returns None) get embedding=None.
     """
     if not HAS_EMBED:
-        _warn("light_embed not installed, skipping embeddings")
+        _warn("light_embed not installed, skipping embeddings"
+              " (expected on Python 3.15+, see requirements.txt)")
         for entry in entries:
             entry["embedding"] = None
         return
